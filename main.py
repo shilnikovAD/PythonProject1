@@ -123,6 +123,21 @@ def solve_case(n1: int, n2: int, r1: float, r2: float, d: float, dv: float, ngri
     ex = e[:, 0]
     ey = e[:, 1]
 
+    # The problem has rotational symmetry about the x-axis.
+    # Fibonacci sphere breaks this symmetry, so we enforce it:
+    #   Ex(x,y) = Ex(x,-y),  Ey(x,y) = -Ey(x,-y),  V(x,y) = V(x,-y)
+    v_2d = v.reshape(ngrid, ngrid)
+    ex_2d = ex.reshape(ngrid, ngrid)
+    ey_2d = ey.reshape(ngrid, ngrid)
+
+    v_2d = 0.5 * (v_2d + v_2d[::-1, :])
+    ex_2d = 0.5 * (ex_2d + ex_2d[::-1, :])
+    ey_2d = 0.5 * (ey_2d - ey_2d[::-1, :])
+
+    v = v_2d.ravel()
+    ex = ex_2d.ravel()
+    ey = ey_2d.ravel()
+
     return {
         "q1": q1,
         "q2": q2,

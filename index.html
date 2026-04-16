@@ -228,9 +228,12 @@
         return [exv, eyv];
       }
 
-      function trace(x0, y0, sign, steps = 400, ds = (2 * lim) / 260) {
+      function traceLine(x0, y0, sign, skipIfHitsSphere) {
+        const steps = 400;
+        const ds = (2 * lim) / 260;
         const pts = [];
         let x = x0, y = y0;
+        let hitSphere = 0;
         pts.push({px: toPx(x, lim, W), py: toPy(y, lim, H)});
 
         for (let i = 0; i < steps; i++) {
@@ -241,10 +244,16 @@
           y += sign * ds * fy / fm;
           if (Math.abs(x) > lim || Math.abs(y) > lim) break;
           pts.push({px: toPx(x, lim, W), py: toPy(y, lim, H)});
-          if (Math.hypot(x - c1[0], y - c1[1]) < r1 || Math.hypot(x - c2[0], y - c2[1]) < r2) break;
+          if (Math.hypot(x - c1[0], y - c1[1]) < r1) { hitSphere = 1; break; }
+          if (Math.hypot(x - c2[0], y - c2[1]) < r2) { hitSphere = 2; break; }
         }
 
+        // Skip duplicate lines (e.g. backward trace from − that reaches +)
+        if (skipIfHitsSphere && hitSphere === skipIfHitsSphere) return;
         if (pts.length < 2) return;
+
+        // For backward traces (sign=-1), reverse so arrows point in E direction
+        if (sign < 0) pts.reverse();
 
         ctx.beginPath();
         ctx.moveTo(pts[0].px, pts[0].py);
@@ -274,12 +283,15 @@
         }
       }
 
-      // Only trace from the positive sphere (field lines originate at positive charges)
       ctx.strokeStyle = "rgba(10,10,10,0.85)";
       ctx.lineWidth = 1.0;
       for (let k = 0; k < seeds; k++) {
         const a = 2 * Math.PI * k / seeds;
-        trace(c1[0] + 1.03 * r1 * Math.cos(a), c1[1] + 1.03 * r1 * Math.sin(a), +1);
+        // From + sphere: forward along E
+        traceLine(c1[0] + 1.03 * r1 * Math.cos(a), c1[1] + 1.03 * r1 * Math.sin(a), +1, 0);
+        // From − sphere: backward along E (lines arriving from infinity)
+        // Skip if line reaches + sphere (those are duplicates of lines traced above)
+        traceLine(c2[0] + 1.03 * r2 * Math.cos(a), c2[1] + 1.03 * r2 * Math.sin(a), -1, 1);
       }
 
       function drawSphere(cx, cy, r) {
