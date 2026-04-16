@@ -195,7 +195,7 @@
       }
 
       for (let py = 0; py < H; py++) {
-        const gy = Math.min(ny - 1, Math.floor(py * ny / H));
+        const gy = ny - 1 - Math.min(ny - 1, Math.floor(py * ny / H));
         for (let px = 0; px < W; px++) {
           const gx = Math.min(nx - 1, Math.floor(px * nx / W));
           const idxGrid = gy * nx + gx;
@@ -212,7 +212,7 @@
 
       function fieldInterp(x, y) {
         const tx = (x + lim) / (2 * lim) * (nx - 1);
-        const ty = (lim - y) / (2 * lim) * (ny - 1);
+        const ty = (y + lim) / (2 * lim) * (ny - 1);
         const x0 = Math.max(0, Math.min(nx - 2, Math.floor(tx)));
         const y0 = Math.max(0, Math.min(ny - 2, Math.floor(ty)));
         const fx = tx - x0;
@@ -229,10 +229,10 @@
       }
 
       function trace(x0, y0, sign, steps = 400, ds = (2 * lim) / 260) {
-        ctx.beginPath();
-        ctx.moveTo(toPx(x0, lim, W), toPy(y0, lim, H));
-        let x = x0;
-        let y = y0;
+        const pts = [];
+        let x = x0, y = y0;
+        pts.push({px: toPx(x, lim, W), py: toPy(y, lim, H)});
+
         for (let i = 0; i < steps; i++) {
           const [fx, fy] = fieldInterp(x, y);
           const fm = Math.hypot(fx, fy);
@@ -240,18 +240,46 @@
           x += sign * ds * fx / fm;
           y += sign * ds * fy / fm;
           if (Math.abs(x) > lim || Math.abs(y) > lim) break;
-          ctx.lineTo(toPx(x, lim, W), toPy(y, lim, H));
+          pts.push({px: toPx(x, lim, W), py: toPy(y, lim, H)});
           if (Math.hypot(x - c1[0], y - c1[1]) < r1 || Math.hypot(x - c2[0], y - c2[1]) < r2) break;
         }
+
+        if (pts.length < 2) return;
+
+        ctx.beginPath();
+        ctx.moveTo(pts[0].px, pts[0].py);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].px, pts[i].py);
+        }
         ctx.stroke();
+
+        // Draw arrowheads along the line
+        const arrowEvery = Math.max(15, Math.floor(pts.length / 4));
+        for (let i = arrowEvery; i < pts.length - 2; i += arrowEvery) {
+          const dx = pts[i + 1].px - pts[i - 1].px;
+          const dy = pts[i + 1].py - pts[i - 1].py;
+          const angle = Math.atan2(dy, dx);
+          const sz = 5;
+          ctx.save();
+          ctx.translate(pts[i].px, pts[i].py);
+          ctx.rotate(angle);
+          ctx.beginPath();
+          ctx.moveTo(sz, 0);
+          ctx.lineTo(-sz * 0.7, sz * 0.45);
+          ctx.lineTo(-sz * 0.7, -sz * 0.45);
+          ctx.closePath();
+          ctx.fillStyle = "rgba(10,10,10,0.85)";
+          ctx.fill();
+          ctx.restore();
+        }
       }
 
+      // Only trace from the positive sphere (field lines originate at positive charges)
       ctx.strokeStyle = "rgba(10,10,10,0.85)";
       ctx.lineWidth = 1.0;
       for (let k = 0; k < seeds; k++) {
         const a = 2 * Math.PI * k / seeds;
         trace(c1[0] + 1.03 * r1 * Math.cos(a), c1[1] + 1.03 * r1 * Math.sin(a), +1);
-        trace(c2[0] + 1.03 * r2 * Math.cos(a), c2[1] + 1.03 * r2 * Math.sin(a), -1);
       }
 
       function drawSphere(cx, cy, r) {
@@ -269,7 +297,7 @@
 
       ctx.fillStyle = "#111";
       ctx.font = "14px Arial";
-      ctx.fillText("Эквипотенциалы (цвет) + силовые линии (черные)", 14, 22);
+      ctx.fillText("Эквипотенциалы (цвет) + силовые линии E (стрелки: от + к −)", 14, 22);
     }
 
     async function run() {
