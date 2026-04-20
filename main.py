@@ -4,6 +4,7 @@ from typing import Tuple, Dict, Any
 
 import numpy as np
 from scipy.linalg import solve
+import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,8 +18,8 @@ K_COULOMB = 1.0 / (4.0 * np.pi * EPS0)
 
 @dataclass
 class ElectrodePanels:
-    points: np.ndarray  # (N, 3)
-    area: np.ndarray    # (N,)
+    points: np.ndarray
+    area: np.ndarray
     potential: float
 
 
@@ -30,7 +31,6 @@ class SimRequest(BaseModel):
     d: float = Field(0.20, gt=0.0)
     dv: float = Field(100.0)
     ngrid: int = Field(90, ge=40, le=260)
-
 
 def fibonacci_sphere(n: int, radius: float, center: Tuple[float, float, float]) -> np.ndarray:
     i = np.arange(n)
@@ -64,19 +64,21 @@ def build_mom_system(el1: ElectrodePanels, el2: ElectrodePanels, self_radius_fac
     diff = points[:, None, :] - points[None, :, :]
     r = np.linalg.norm(diff, axis=2)
 
-    # Self-term regularization for collocation approximation.
     a_eff = np.sqrt(areas / np.pi) * self_radius_factor
-    np.fill_diagonal(r, a_eff)
+    idx = np.arange(n)
+    r[idx, idx] = a_eff
 
     A = K_COULOMB / r
     return A, b, points, n1
 
 
 def potential_at_points(points_eval: np.ndarray, src_points: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Потенциал в точках points_eval от дискретных зарядов q в src_points."""
     diff = points_eval[:, None, :] - src_points[None, :, :]
     r = np.linalg.norm(diff, axis=2)
     r = np.where(r > 1e-16, r, np.inf)
-    return K_COULOMB * np.sum(q[None, :] / r, axis=1)
+    # q имеет форму (n_src,), r имеет форму (n_eval, n_src) -> broadcast по второй оси
+    return K_COULOMB * np.sum(q / r, axis=1)
 
 
 def compute_field(points_eval: np.ndarray, src_points: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -84,7 +86,8 @@ def compute_field(points_eval: np.ndarray, src_points: np.ndarray, q: np.ndarray
     r2 = np.sum(diff * diff, axis=2)
     r = np.sqrt(r2)
     r3 = np.where(r > 1e-16, r2 * r, np.inf)
-    e = K_COULOMB * np.sum((q[None, :, None] * diff) / r3[:, :, None], axis=1)
+    # Используем einsum для более чистого и быстрого суммирования
+    e = K_COULOMB * np.einsum('ij,ijk->ik', q / r3, diff)
     return e
 
 
@@ -103,7 +106,20 @@ def solve_case(n1: int, n2: int, r1: float, r2: float, d: float, dv: float, ngri
     el2 = sphere_panels(n2, r2, c2, v2)
 
     A, b, points, split = build_mom_system(el1, el2)
-    q = solve(A, b, assume_a="gen")
+    try:
+        condA = float(np.linalg.cond(A))
+    except Exception:
+        condA = float('inf')
+
+    try:
+        q = solve(A, b, assume_a="gen")
+    except Exception as exc:
+        raise ValueError(f"Не удалось решить СЛАУ: {exc}")
+
+    try:
+        residual = float(np.linalg.norm(A.dot(q) - b))
+    except Exception:
+        residual = float('nan')
 
     q1 = float(np.sum(q[:split]))
     q2 = float(np.sum(q[split:]))
@@ -127,6 +143,8 @@ def solve_case(n1: int, n2: int, r1: float, r2: float, d: float, dv: float, ngri
         "q1": q1,
         "q2": q2,
         "capacitance": capacitance,
+        "cond": condA,
+        "residual": residual,
         "lim": lim,
         "geometry": {
             "c1": [c1[0], c1[1]],
@@ -142,7 +160,6 @@ def solve_case(n1: int, n2: int, r1: float, r2: float, d: float, dv: float, ngri
             "ey": ey.tolist(),
         },
     }
-
 
 app = FastAPI(title="Electrostatics MoM API")
 
@@ -179,7 +196,6 @@ def api_simulate(req: SimRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ошибка расчета: {exc}")
 
-
 def run_cli():
     parser = argparse.ArgumentParser(description="Электростатика MoM: две сферы")
     parser.add_argument("--n1", type=int, default=250)
@@ -198,6 +214,46 @@ def run_cli():
     print(f"Q1+Q2 = {(result['q1'] + result['q2']):.3e} Кл")
     print(f"C = {result['capacitance']:.6e} Ф")
 
+    # Добавляем визуализацию (как в plates_mom.py)
+    lim = result["lim"]
+    ngrid = result["grid"]["nx"]
+    x = np.linspace(-lim, lim, ngrid)
+    y = np.linspace(-lim, lim, ngrid)
+    X, Y = np.meshgrid(x, y)
+
+    Phi = np.array(result["grid"]["potential"]).reshape(ngrid, ngrid)
+    Ex = np.array(result["grid"]["ex"]).reshape(ngrid, ngrid)
+    Ey = np.array(result["grid"]["ey"]).reshape(ngrid, ngrid)
+
+    plt.figure(figsize=(10, 8))
+    contour = plt.contourf(X, Y, Phi, levels=50, cmap='RdBu_r', alpha=0.8)
+    plt.colorbar(contour, label='Потенциал $\\varphi$ (В)')
+
+    # Силовые линии поля
+    plt.streamplot(X, Y, Ex, Ey, color='k', density=1.5, linewidth=1, arrowsize=1.5)
+
+    # Рисуем сферы (в сечении это круги)
+    c1 = result["geometry"]["c1"]
+    c2 = result["geometry"]["c2"]
+    r1 = result["geometry"]["r1"]
+    r2 = result["geometry"]["r2"]
+
+    circle1 = plt.Circle((c1[0], c1[1]), r1, color='white', ec='black', lw=2, zorder=10)
+    circle2 = plt.Circle((c2[0], c2[1]), r2, color='white', ec='black', lw=2, zorder=10)
+    plt.gca().add_patch(circle1)
+    plt.gca().add_patch(circle2)
+
+    plt.title('Электростатическое поле двух сфер (Метод Моментов)')
+    plt.xlabel('X (м)')
+    plt.ylabel('Y (м)')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.axis('equal')
+    plt.xlim(-lim, lim)
+    plt.ylim(-lim, lim)
+    plt.tight_layout()
+
+    plt.savefig('spheres_field.png', dpi=300)
+    print("\nГрафик сохранен в файл 'spheres_field.png'")
 
 if __name__ == "__main__":
     run_cli()
